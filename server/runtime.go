@@ -157,9 +157,17 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		if r.gwEnabled {
 			r.logger.Info("grpc gateway enabled")
 			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{EmitDefaults: true}))
+			var h http.Handler
+			h = gwmux
+			if r.authRuntime != nil {
+				// auth runtime set
+				h = middleware.HTTPBearerTokenAuth(r.authRuntime, gwmux)
+			} else {
+				r.logger.Error("auth runtime not enabled for the grpc gateway server")
+			}
 			r.gwServer = &http.Server{
 				Addr:      fmt.Sprintf(":%d", r.gwPort),
-				Handler:   &ochttp.Handler{Handler: middleware.HTTPRuntimeIDAuth(r.authRuntime, gwmux)},
+				Handler:   &ochttp.Handler{Handler: h}, // instruments http with opencensus
 				TLSConfig: tlsConfig,
 			}
 		} else {
@@ -360,7 +368,7 @@ func (r *runtime) newGRPCServerWithMetrics(tlsConfig *tls.Config) (*grpc.Server,
 	if r.authRuntime != nil {
 		opts = append(opts, middleware.GRPCAuth(r.authRuntime)...)
 	} else {
-		r.logger.Error("auth runtime not enabled for the server")
+		r.logger.Error("auth runtime not enabled for the grpc server")
 	}
 
 	if tlsConfig != nil {

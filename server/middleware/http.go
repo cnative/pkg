@@ -23,8 +23,8 @@ func HTTPBasicAuth(handler http.HandlerFunc, username, password string) http.Han
 	}
 }
 
-// HTTPRuntimeIDAuth Wraps will return a new http.Handler that will enforce auth as configured
-func HTTPRuntimeIDAuth(authRuntime auth.Runtime, wrapped http.Handler) http.Handler {
+// HTTPBearerTokenAuth Wraps will return a new http.Handler that will enforce auth as configured
+func HTTPBearerTokenAuth(authRuntime auth.Runtime, wrapped http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqToken := r.Header.Get("Authorization")
 		sp := strings.Split(reqToken, "Bearer")
