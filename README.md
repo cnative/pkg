@@ -6,6 +6,7 @@ This repo provides a common set of modules for building micro-services that run 
     - tracing
     - metrics
     - auth runtime (OpenID Connect)
+    - authz support (experimental)
     - TLS handling (mTLS including)
     - debug server (with pprof)
     - health checks

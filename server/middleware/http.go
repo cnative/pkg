@@ -23,9 +23,10 @@ func HTTPBasicAuth(handler http.HandlerFunc, username, password string) http.Han
 	}
 }
 
-// HTTPBearerTokenAuth Wraps will return a new http.Handler that will enforce auth as configured
-func HTTPBearerTokenAuth(authRuntime auth.Runtime, wrapped http.Handler) http.Handler {
+// HTTPRuntimeIDAuth Wraps will return a new http.Handler that will enforce auth as configured
+func HTTPRuntimeIDAuth(authRuntime auth.Runtime, wrapped http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
 		reqToken := r.Header.Get("Authorization")
 		sp := strings.Split(reqToken, "Bearer")
 		if len(sp) != 2 {
@@ -40,10 +41,10 @@ func HTTPBearerTokenAuth(authRuntime auth.Runtime, wrapped http.Handler) http.Ha
 			return
 		}
 
-		var rs auth.Resource
-		var a auth.Action
-		ctx, allow, err := authRuntime.Authorize(ctx, c, rs, a)
-		if err != nil || !allow {
+		// TODO(vshiva): resolve req, resource and action.
+		// Until this is fixed all request submitted via gateway is expected to fail
+		ctx, authzResult, err := authRuntime.Authorize(ctx, c, "", "", nil)
+		if err != nil || !authzResult.Allowed {
 			http.Error(w, "Forbidden.\n", http.StatusForbidden)
 			return
 		}

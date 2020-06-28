@@ -12,6 +12,20 @@ type (
 	optionFunc func(*runtime)
 )
 
+// AppName for auhtz runtime
+func AppName(appName string) Option {
+	return optionFunc(func(r *runtime) {
+		r.appName = appName
+	})
+}
+
+// ServiceName for authz runtime
+func ServiceName(serviceName string) Option {
+	return optionFunc(func(r *runtime) {
+		r.serviceName = serviceName
+	})
+}
+
 // Logger for runtime
 func Logger(l *log.Logger) Option {
 	return optionFunc(func(r *runtime) {
@@ -72,5 +86,34 @@ func IDResolver(idResolver IDResolverFn) Option {
 func AdditionalClaimsProvider(additionalClaimsProvider AddtionalClaimsProviderFn) Option {
 	return optionFunc(func(r *runtime) {
 		r.additionalClaimsProvider = additionalClaimsProvider
+	})
+}
+
+// RoleBindingResolver uses this resolver to map a subject to a set of roles
+func RoleBindingResolver(roleBindingResolver RoleBindingResolverFn) Option {
+	return optionFunc(func(r *runtime) {
+		r.roleBindingResolver = roleBindingResolver
+	})
+}
+
+// ResourceResolver uses this resolver to lookup the resource attributes that can be used for authorization checks
+func ResourceResolver(resourceResolver ResourceResolverFn) Option {
+	return optionFunc(func(r *runtime) {
+		r.resourceResolver = resourceResolver
+	})
+}
+
+// ResourceIdentifier look at incoming request and identify the resource
+func ResourceIdentifier(resourceIdentifier ResourceIdentifierFn) Option {
+	return optionFunc(func(r *runtime) {
+		r.resourceIdentifier = resourceIdentifier
+	})
+}
+
+// AdminGroupRoleMapping maps the adminGroup to the specified adminRole for authorization request. the group assignment and resolution happens externally
+func AdminGroupRoleMapping(adminGroup, adminRole string) Option {
+	return optionFunc(func(r *runtime) {
+		r.adminGroup = adminGroup
+		r.adminRole = adminRole
 	})
 }
