@@ -89,7 +89,7 @@ type runtime struct {
 	roleBindingResolver      RoleBindingResolverFn     // A RoleBinding resolver for a subject
 	resourceResolver         ResourceResolverFn        // A Resource resolver for incoming resource
 	resourceIdentifier       ResourceIdentifierFn      // Resource identifier resolver for incoming requests
-	adminGroup               string                    // a group which needs to mapped to "admin" role in rocksalt. this group assignment and resolution happens outside of rocksalt
+	adminGroup               string                    // a group which needs to mapped to "admin" role in service. this group assignment and resolution happens outside of service
 	adminRole                string                    // if the claim has an admin group, map the subject to this role
 }
 
