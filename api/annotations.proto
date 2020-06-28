@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package api;
+
+import "api/authz.proto";
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cnative/pkg/api;api";
+
+extend google.protobuf.MethodOptions {
+  Authz authz = 81833;
+}

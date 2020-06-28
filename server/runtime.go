@@ -16,6 +16,8 @@ import (
 
 	"github.com/cnative/pkg/health"
 	"github.com/cnative/pkg/log"
+	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/grpcreflect"
 
 	"github.com/cnative/pkg/auth"
 	"github.com/cnative/pkg/server/middleware"
@@ -55,9 +57,12 @@ type (
 		debugServer   *http.Server
 		htServer      *http.Server
 		httpHandler   http.Handler
+		daemon        DaemonHandler
 
-		authRuntime    auth.Runtime
-		grpcAPIHandler GRPCAPIHandler
+		grpcServerKAProps     *keepalive.ServerParameters
+		authRuntime           auth.Runtime
+		grpcAPIHandler        GRPCAPIHandler
+		grpcMethodDescriptors map[string]*desc.MethodDescriptor
 
 		gPort  uint // GRPC server port
 		htPort uint // HTTP server port
@@ -84,12 +89,19 @@ type (
 		tags                  map[string]string // info purpose labels
 		startTime             time.Time
 		statsViews            []*view.View
+		shutdownHook          func(context.Context) error // shutdown hook for runtime
 	}
 
 	//Runtime interface defines server operations
 	Runtime interface {
 		Start(context.Context) (chan error, error)
 		Stop(context.Context)
+	}
+
+	// DaemonHandler for running tasks in the background that does not have http or grpc interfaces
+	DaemonHandler interface {
+		Serve(context.Context) error
+		Stop(context.Context) error
 	}
 )
 
@@ -116,7 +128,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 			return nil, err
 		}
 	} else {
-		r.logger.Errorf("no TLS key specified for servers. will start server insecurely....")
+		r.logger.Warn("no TLS key specified for servers. will start server insecurely....")
 	}
 
 	r.healthServer = health.New(health.BindPort(r.hPort), health.Logger(r.logger))
@@ -147,6 +159,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 
 	if r.grpcEnabled {
 		r.logger.Debug("creating grpc server")
+		r.grpcMethodDescriptors = map[string]*desc.MethodDescriptor{}
 		gsrv, err := r.newGRPCServerWithMetrics(tlsConfig)
 		if err != nil {
 			return nil, err
@@ -157,17 +170,13 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		if r.gwEnabled {
 			r.logger.Info("grpc gateway enabled")
 			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{EmitDefaults: true}))
-			var h http.Handler
-			h = gwmux
+			var h http.Handler = gwmux
 			if r.authRuntime != nil {
-				// auth runtime set
-				h = middleware.HTTPBearerTokenAuth(r.authRuntime, gwmux)
-			} else {
-				r.logger.Error("auth runtime not enabled for the grpc gateway server")
+				h = middleware.HTTPRuntimeIDAuth(r.authRuntime, gwmux)
 			}
 			r.gwServer = &http.Server{
 				Addr:      fmt.Sprintf(":%d", r.gwPort),
-				Handler:   &ochttp.Handler{Handler: h}, // instruments http with opencensus
+				Handler:   &ochttp.Handler{Handler: h},
 				TLSConfig: tlsConfig,
 			}
 		} else {
@@ -176,6 +185,14 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 
 		if err := r.grpcAPIHandler.Register(ctx, r.grpcServer, gwmux); err != nil {
 			return nil, err
+		}
+
+		sds, _ := grpcreflect.LoadServiceDescriptors(r.grpcServer)
+		for _, sd := range sds {
+			for _, md := range sd.GetMethods() {
+				methodName := fmt.Sprintf("/%s/%s", sd.GetFullyQualifiedName(), md.GetName())
+				r.grpcMethodDescriptors[methodName] = md
+			}
 		}
 	}
 
@@ -194,7 +211,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 // Start server runtime
 func (r *runtime) Start(ctx context.Context) (chan error, error) {
 
-	errc := make(chan error, 7) // error buffer channel as we have about 7 goroutines below
+	errc := make(chan error, 8) // error buffer channel for goroutines below
 
 	// Shutdown on SIGINT, SIGTERM
 	go func() {
@@ -241,7 +258,12 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		// start gRPC gateway
 		go func() {
 			r.logger.Infow("starting gateway server", "port", r.gwPort)
-			err := r.gwServer.ListenAndServeTLS(r.certFile, r.keyFile)
+			var err error
+			if r.certFile == "" && r.keyFile == "" {
+				err = r.gwServer.ListenAndServe()
+			} else {
+				err = r.gwServer.ListenAndServeTLS(r.certFile, r.keyFile)
+			}
 			errc <- errors.Wrap(err, "gateway server returned an error")
 		}()
 	}
@@ -269,6 +291,14 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		err := r.healthServer.Start()
 		errc <- errors.Wrap(err, "health service returned an error")
 	}()
+
+	if r.daemon != nil {
+		// Start daemon server
+		go func() {
+			r.logger.Info("starting daemnon server")
+			errc <- r.daemon.Serve(ctx)
+		}()
+	}
 
 	// Start metrics server
 	go func() {
@@ -346,29 +376,59 @@ func (r *runtime) Stop(ctx context.Context) {
 			r.logger.Errorf("error happened while stopping oc exporter", err)
 		}
 	}
+
+	if r.daemon != nil {
+		r.logger.Info("stopping daemon server")
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := r.daemon.Stop(ctx); err != nil {
+			r.logger.Errorf("error happened while stopping daemon server", err)
+		}
+	}
+
+	if r.shutdownHook != nil {
+		r.logger.Info("calling shutdown hook")
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := r.shutdownHook(ctx); err != nil {
+			r.logger.Errorf("error happened while calling shutdown hook", err)
+		}
+	}
+}
+
+// grpc server connection keep alive properties
+func defaultServerKeepAliveConnectionProps() keepalive.ServerParameters {
+	return keepalive.ServerParameters{
+		MaxConnectionIdle:     60 * time.Second, // If a client is idle for 60 seconds, send a GOAWAY
+		MaxConnectionAgeGrace: 15 * time.Second, // Allow 15 seconds for pending RPCs to complete before forcibly closing connections
+		Time:                  60 * time.Second, // Ping the client if it is idle for 60 seconds to ensure the connection is still active
+		Timeout:               1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
+		MaxConnectionAge:      4 * time.Hour,    // If any connection is alive for more than 4 Hours, send a GOAWAY
+	}
 }
 
 func (r *runtime) newGRPCServerWithMetrics(tlsConfig *tls.Config) (*grpc.Server, error) {
 	r.logger.Debug("creating new gRPC server with default server metrics views")
 
+	var sacProp keepalive.ServerParameters
+	if r.grpcServerKAProps != nil {
+		sacProp = *r.grpcServerKAProps
+	} else {
+		sacProp = defaultServerKeepAliveConnectionProps()
+	}
+
 	opts := []grpc.ServerOption{
 		grpc.StatsHandler(&ocgrpc.ServerHandler{}),
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle:     15 * time.Second, // If a client is idle for 15 seconds, send a GOAWAY
-			MaxConnectionAge:      30 * time.Second, // If any connection is alive for more than 30 seconds, send a GOAWAY
-			MaxConnectionAgeGrace: 5 * time.Second,  // Allow 5 seconds for pending RPCs to complete before forcibly closing connections
-			Time:                  5 * time.Second,  // Ping the client if it is idle for 5 seconds to ensure the connection is still active
-			Timeout:               1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
-		}),
+		grpc.KeepaliveParams(sacProp),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
 			PermitWithoutStream: true,            // Allow pings even when there are no active streams
 		}),
 	}
 	if r.authRuntime != nil {
-		opts = append(opts, middleware.GRPCAuth(r.authRuntime)...)
+		opts = append(opts, middleware.GRPCAuth(r.authRuntime, r.grpcMethodDescriptors)...)
 	} else {
-		r.logger.Error("auth runtime not enabled for the grpc server")
+		r.logger.Warn("auth runtime not enabled for the server")
 	}
 
 	if tlsConfig != nil {
@@ -447,7 +507,7 @@ func (r *runtime) getTLSConfig() (*tls.Config, error) {
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		tlsConfig.ClientCAs = certPool
 	} else {
-		r.logger.Errorf("mTLS not enabled")
+		r.logger.Info("mTLS not enabled")
 	}
 
 	return &tlsConfig, nil

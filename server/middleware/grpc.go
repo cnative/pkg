@@ -3,6 +3,8 @@ package middleware
 import (
 	"strings"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/jhump/protoreflect/desc"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -10,6 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/cnative/pkg/api"
 	"github.com/cnative/pkg/auth"
 )
 
@@ -103,36 +106,61 @@ func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) grpc.S
 	return grpc.StreamInterceptor(chainingStreamInterceptor(interceptors...))
 }
 
-// Move this into Auth --> TODO
-func auth0(ctx context.Context, authRuntime auth.Runtime) (context.Context, error) {
+func auth0(ctx context.Context, authRuntime auth.Runtime, req interface{}, resource, action string) (context.Context, error) {
 
 	token, err := getTokenFromGRPCContext(ctx)
 	if err != nil {
-		return ctx, status.Errorf(codes.PermissionDenied, "%v", err.Error())
+		return ctx, status.Errorf(codes.Unauthenticated, "%v", err.Error())
 	}
 
 	ctx, c, err := authRuntime.Verify(ctx, token)
 	if err != nil {
-		return ctx, status.Errorf(codes.PermissionDenied, "%v", err.Error())
-	}
-	var r auth.Resource
-	var a auth.Action
-	ctx, allow, err := authRuntime.Authorize(ctx, c, r, a)
-	if err != nil {
-		return ctx, status.Errorf(codes.PermissionDenied, "resource=%v, action=%v, subject=%v, message=%v", r, a, c, err.Error())
+		return ctx, status.Errorf(codes.Unauthenticated, "%v", err.Error())
 	}
 
-	if allow {
+	ctx, authzResult, err := authRuntime.Authorize(ctx, c, resource, action, req)
+	if err != nil {
+		return ctx, status.Errorf(codes.PermissionDenied, "contact system administrator - %v", err.Error())
+	}
+
+	if authzResult.Allowed {
 		return ctx, nil
 	}
 
-	return ctx, status.Errorf(codes.PermissionDenied, "resource=%v, action=%v, subject=%v", r, a, c)
+	return ctx, status.Error(codes.PermissionDenied, "contact system administrator")
+}
+
+func resourceActionResolver(methodName string, methodDescriptors map[string]*desc.MethodDescriptor) (resource string, action string, err error) {
+
+	if dsc, ok := methodDescriptors[methodName]; ok && proto.HasExtension(dsc.GetMethodOptions(), api.E_Authz) {
+		ext, err := proto.GetExtension(dsc.GetMethodOptions(), api.E_Authz)
+		if err != nil {
+			return "", "", err
+		}
+		az, ok := ext.(*api.Authz)
+		if !ok {
+			err = errors.Errorf("failed to type casting. expect '*api.Authz' got %T\n", az)
+			return "", "", err
+		}
+		if az != nil {
+			resource = az.Resource
+			action = az.Action
+		}
+	}
+
+	return resource, action, nil
 }
 
 // returns a new unary server interceptors that performs per-request auth
-func unaryAuth(authRuntime auth.Runtime) grpc.UnaryServerInterceptor {
+func unaryAuth(authRuntime auth.Runtime, methodDescriptors map[string]*desc.MethodDescriptor) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		newCtx, err := auth0(ctx, authRuntime)
+
+		resource, action, err := resourceActionResolver(info.FullMethod, methodDescriptors)
+		if err != nil {
+			return nil, err
+		}
+
+		newCtx, err := auth0(ctx, authRuntime, req, resource, action)
 		if err != nil {
 			return nil, err
 		}
@@ -141,9 +169,13 @@ func unaryAuth(authRuntime auth.Runtime) grpc.UnaryServerInterceptor {
 }
 
 // returns a new stream server interceptors that performs per-request auth
-func streamAuth(authRuntime auth.Runtime) grpc.StreamServerInterceptor {
+func streamAuth(authRuntime auth.Runtime, methodDescriptors map[string]*desc.MethodDescriptor) grpc.StreamServerInterceptor {
 	return func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		newCtx, err := auth0(stream.Context(), authRuntime)
+		resource, action, err := resourceActionResolver(info.FullMethod, methodDescriptors)
+		if err != nil {
+			return err
+		}
+		newCtx, err := auth0(stream.Context(), authRuntime, stream, resource, action)
 		if err != nil {
 			return err
 		}
@@ -154,11 +186,11 @@ func streamAuth(authRuntime auth.Runtime) grpc.StreamServerInterceptor {
 }
 
 // GRPCAuth returns unary and stream interceptors
-func GRPCAuth(authRuntime auth.Runtime) []grpc.ServerOption {
+func GRPCAuth(authRuntime auth.Runtime, methodDescriptors map[string]*desc.MethodDescriptor) []grpc.ServerOption {
 
 	return []grpc.ServerOption{
-		WithUnaryInterceptors(unaryAuth(authRuntime)),
-		WithStreamInterceptors(streamAuth(authRuntime)),
+		WithUnaryInterceptors(unaryAuth(authRuntime, methodDescriptors)),
+		WithStreamInterceptors(streamAuth(authRuntime, methodDescriptors)),
 	}
 }
 

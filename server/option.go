@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
 	"go.opencensus.io/stats/view"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/cnative/pkg/log"
 
@@ -61,6 +63,13 @@ func AuthRuntime(authRuntime auth.Runtime) Option {
 func GRPCPort(port uint) Option {
 	return optionFunc(func(r *runtime) {
 		r.gPort = port
+	})
+}
+
+// GRPCServerKeepAlive grpc server connection keep alive properties
+func GRPCServerKeepAlive(ka *keepalive.ServerParameters) Option {
+	return optionFunc(func(r *runtime) {
+		r.grpcServerKAProps = ka
 	})
 }
 
@@ -156,5 +165,19 @@ func CustomMetricsViews(views ...*view.View) Option {
 func ProcessMetrics(enabled bool) Option {
 	return optionFunc(func(r *runtime) {
 		r.processMetricsEnabled = enabled
+	})
+}
+
+// ShutdownHook called in the after shutting all the support services
+func ShutdownHook(hook func(context.Context) error) Option {
+	return optionFunc(func(r *runtime) {
+		r.shutdownHook = hook
+	})
+}
+
+// Daemon a is background service with no listener
+func Daemon(daemon DaemonHandler) Option {
+	return optionFunc(func(r *runtime) {
+		r.daemon = daemon
 	})
 }

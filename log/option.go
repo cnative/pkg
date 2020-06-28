@@ -22,8 +22,16 @@ func WithFormat(format Format) Option {
 }
 
 // WithTags sets logger's tags
-func WithTags(tags ...string) Option {
+func WithTags(tags map[string]string) Option {
 	return optionFunc(func(l *Logger) {
 		l.tags = tags
+	})
+}
+
+// WithRollbar enables critical logging to rollbar
+func WithRollbar(token string, minLevel Level) Option {
+	return optionFunc(func(l *Logger) {
+		l.rollbarToken = token
+		l.rollbarMinLevel = minLevel
 	})
 }

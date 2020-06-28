@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package api;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cnative/pkg/api;api";
+
+message Authz {
+	string resource =  71933;
+	string action =  71934;
+}

@@ -57,9 +57,12 @@ type (
 		wrappedLogger *zap.SugaredLogger
 		level         Level
 		name          string
-		tags          []string
+		tags          map[string]string
 		format        Format
 		out           io.Writer
+
+		rollbarToken    string
+		rollbarMinLevel Level
 	}
 )
 
@@ -73,16 +76,16 @@ func NewNop() (*Logger, error) {
 }
 
 // New returns a new Logger
-func New(otions ...Option) (*Logger, error) {
+func New(options ...Option) (*Logger, error) {
 
 	logger := &Logger{
-
-		format: AUTO,
-		level:  InfoLevel,
-		out:    os.Stdout,
+		format:          AUTO,
+		level:           InfoLevel,
+		out:             os.Stdout,
+		rollbarMinLevel: ErrorLevel,
 	}
 
-	for _, opt := range otions {
+	for _, opt := range options {
 		opt.apply(logger)
 	}
 	if logger.name == "" {
@@ -98,12 +101,19 @@ func (l *Logger) initWrappedLogger() {
 	atom.SetLevel(zapcore.Level(l.level))
 	logOut := zapcore.Lock(os.Stdout) // could be a file or a remote sync
 
-	wl := zap.New(zapcore.NewCore(
-		l.getEncoder(),
-		logOut,
-		atom,
-	),
-	)
+	zcores := []zapcore.Core{
+		zapcore.NewCore(
+			l.getEncoder(),
+			logOut,
+			atom,
+		),
+	}
+
+	if l.rollbarToken != "" {
+		// Tee off logs to rollbar
+		zcores = append(zcores, newRollbarCore(l.rollbarToken, l.getEvironment(), l.getVersion(), l.rollbarMinLevel))
+	}
+	wl := zap.New(zapcore.NewTee(zcores...), zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zap.WarnLevel))
 	l.wrappedLogger = wl.Named(l.name).Sugar()
 }
 
@@ -139,7 +149,7 @@ func (l *Logger) isTerminal() bool {
 
 // NamedLogger returns a named sub logger
 func (l *Logger) NamedLogger(name string) *Logger {
-	return &Logger{wrappedLogger: l.wrappedLogger.Named(name)}
+	return &Logger{name: name, wrappedLogger: l.wrappedLogger.Named(name)}
 }
 
 //Info - wrapper to underlying logger
@@ -230,4 +240,17 @@ func (l *Logger) Fatalw(msg string, keysAndValues ...interface{}) {
 // Panicw logs a message with some additional context
 func (l *Logger) Panicw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Panicw(msg, keysAndValues...)
+}
+
+// Flush any buffered log entries.
+func (l *Logger) Flush() {
+	l.wrappedLogger.Sync()
+}
+
+func (l *Logger) getVersion() string {
+	return l.tags["version"]
+}
+
+func (l *Logger) getEvironment() string {
+	return l.tags["environment"]
 }

@@ -14,23 +14,25 @@ type Claims interface {
 	GetEmail() string
 	IsEmailVerified() bool
 	GetLocale() string
+	GetGroups() []string
 
 	GetAdditionalClaims() interface{}
 }
 
 type claims struct {
-	Subject           string `json:"sub,omitempty"`
-	Name              string `json:"name,omitempty"`
-	GivenName         string `json:"given_name,omitempty"`
-	FamilyName        string `json:"family_name,omitempty"`
-	MiddleName        string `json:"middle_name,omitempty"`
-	NickName          string `json:"nickname,omitempty"`
-	PreferredUserName string `json:"preferred_username,omitempty"`
-	ProfileURL        string `json:"profile,omitempty"`
-	PictureURL        string `json:"picture,omitempty"`
-	Email             string `json:"email,omitempty"`
-	EmailVerified     bool   `json:"email_verified,omitempty"`
-	Locale            string `json:"locale,omitempty"`
+	Subject           string   `json:"sub,omitempty"`
+	Name              string   `json:"name,omitempty"`
+	GivenName         string   `json:"given_name,omitempty"`
+	FamilyName        string   `json:"family_name,omitempty"`
+	MiddleName        string   `json:"middle_name,omitempty"`
+	NickName          string   `json:"nickname,omitempty"`
+	PreferredUserName string   `json:"preferred_username,omitempty"`
+	ProfileURL        string   `json:"profile,omitempty"`
+	PictureURL        string   `json:"picture,omitempty"`
+	Email             string   `json:"email,omitempty"`
+	EmailVerified     bool     `json:"email_verified,omitempty"`
+	Locale            string   `json:"locale,omitempty"`
+	Groups            []string `json:"groups,omitempty"`
 
 	AdditionalClaims interface{} `json:"additional_claims,omitempty"` // these are custom claims that are presented in the token.
 }
@@ -94,6 +96,14 @@ func (c *claims) IsEmailVerified() bool {
 func (c *claims) GetLocale() string {
 
 	return c.Locale
+}
+
+func (c *claims) GetGroups() []string {
+	if c.Groups == nil {
+		return []string{}
+	}
+
+	return c.Groups
 }
 
 // GetConnectorUserID returns the connector-local unique identifier. This can
