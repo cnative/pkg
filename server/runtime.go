@@ -18,6 +18,7 @@ import (
 	"github.com/cnative/pkg/log"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/soheilhy/cmux"
 
 	"github.com/cnative/pkg/auth"
 	"github.com/cnative/pkg/server/middleware"
@@ -33,7 +34,6 @@ import (
 	"go.opencensus.io/trace"
 	"go.opencensus.io/zpages"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -66,7 +66,6 @@ type (
 
 		gPort  uint // GRPC server port
 		htPort uint // HTTP server port
-		gwPort uint // gateway server port
 		hPort  uint // health server port
 		mPort  uint // metrics server port
 		dPort  uint // debug server port
@@ -109,6 +108,10 @@ func (f optionFunc) apply(r *runtime) {
 	f(r)
 }
 
+func (r *runtime) isSecureConnection() bool {
+	return r.keyFile != "" && r.certFile != ""
+}
+
 // NewRuntime returns a new Runtime
 func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, error) {
 	// setup defaults
@@ -120,15 +123,9 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		r.logger, _ = log.NewNop()
 	}
 
-	var tlsConfig *tls.Config
 	r.logger.Infow("TLS info", "key-file", r.keyFile, "cert-file", r.certFile, "client-ca", r.clientCA)
-	if r.keyFile != "" && r.certFile != "" {
-		var err error
-		if tlsConfig, err = r.getTLSConfig(); err != nil {
-			return nil, err
-		}
-	} else {
-		r.logger.Warn("no TLS key specified for servers. will start server insecurely....")
+	if !r.isSecureConnection() {
+		r.logger.Warn("no TLS key specified. starting server insecurely....")
 	}
 
 	r.healthServer = health.New(health.BindPort(r.hPort), health.Logger(r.logger))
@@ -160,7 +157,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	if r.grpcEnabled {
 		r.logger.Debug("creating grpc server")
 		r.grpcMethodDescriptors = map[string]*desc.MethodDescriptor{}
-		gsrv, err := r.newGRPCServerWithMetrics(tlsConfig)
+		gsrv, err := r.newGRPCServerWithMetrics()
 		if err != nil {
 			return nil, err
 		}
@@ -175,9 +172,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 				h = middleware.HTTPRuntimeIDAuth(r.authRuntime, gwmux)
 			}
 			r.gwServer = &http.Server{
-				Addr:      fmt.Sprintf(":%d", r.gwPort),
-				Handler:   &ochttp.Handler{Handler: h},
-				TLSConfig: tlsConfig,
+				Handler: &ochttp.Handler{Handler: h},
 			}
 		} else {
 			r.logger.Info("grpc gateway not enabled")
@@ -199,13 +194,21 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	if r.htEnabled {
 		r.logger.Info("http server enabled")
 		r.htServer = &http.Server{
-			Addr:      fmt.Sprintf(":%d", r.htPort),
-			Handler:   &ochttp.Handler{Handler: r.httpHandler},
-			TLSConfig: tlsConfig,
+			Addr:    fmt.Sprintf(":%d", r.htPort),
+			Handler: &ochttp.Handler{Handler: r.httpHandler},
 		}
 	}
 
 	return r, nil
+}
+
+func (r *runtime) wrapListenerWithTLS(l net.Listener) (net.Listener, error) {
+	tc, err := r.getTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return tls.NewListener(l, tc), nil
 }
 
 // Start server runtime
@@ -240,6 +243,7 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		}()
 	}
 
+	var cm, tcm cmux.CMux
 	if r.grpcEnabled {
 		// start gRPC server
 		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", r.gPort))
@@ -247,25 +251,37 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 			r.logger.Errorf("failed to create grpc listener -%v ", err)
 			return nil, err
 		}
+
+		cm = cmux.New(lis)
+		var grpcL, gwL net.Listener
+		if r.isSecureConnection() {
+			tlsl := cm.Match(cmux.TLS())
+			tlsl, err = r.wrapListenerWithTLS(tlsl)
+			if err != nil {
+				return nil, err
+			}
+			tcm = cmux.New(tlsl)
+			grpcL = tcm.MatchWithWriters(cmux.HTTP2MatchHeaderFieldPrefixSendSettings("content-type", "application/grpc"))
+			gwL = tcm.Match(cmux.HTTP1Fast())
+		} else {
+			gwL = cm.Match(cmux.HTTP1Fast())
+			grpcL = cm.Match(cmux.Any())
+		}
+
 		go func() {
 			r.logger.Infow("starting grpc server", "port", r.gPort)
-			err := r.grpcServer.Serve(lis)
-			errc <- errors.Wrap(err, "server returned an error")
+			err := r.grpcServer.Serve(grpcL)
+			errc <- errors.Wrap(err, "grpc server returned an error")
 		}()
-	}
 
-	if r.gwEnabled {
-		// start gRPC gateway
-		go func() {
-			r.logger.Infow("starting gateway server", "port", r.gwPort)
-			var err error
-			if r.certFile == "" && r.keyFile == "" {
-				err = r.gwServer.ListenAndServe()
-			} else {
-				err = r.gwServer.ListenAndServeTLS(r.certFile, r.keyFile)
-			}
-			errc <- errors.Wrap(err, "gateway server returned an error")
-		}()
+		if r.gwEnabled {
+			// start gRPC gateway
+			go func() {
+				r.logger.Infow("starting gateway server", "port", r.gPort)
+				err := r.gwServer.Serve(gwL)
+				errc <- errors.Wrap(err, "grpc gateway server returned an error")
+			}()
+		}
 	}
 
 	if r.htEnabled {
@@ -273,10 +289,10 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		go func() {
 			r.logger.Infow("starting http server", "port", r.htPort)
 			var err error
-			if r.certFile == "" && r.keyFile == "" {
-				err = r.htServer.ListenAndServe()
-			} else {
+			if r.isSecureConnection() {
 				err = r.htServer.ListenAndServeTLS(r.certFile, r.keyFile)
+			} else {
+				err = r.htServer.ListenAndServe()
 			}
 			errc <- errors.Wrap(err, "http server returned an error")
 		}()
@@ -306,6 +322,17 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		err := r.metricsServer.ListenAndServe()
 		errc <- errors.Wrap(err, "metrics service returned an error")
 	}()
+
+	if cm != nil {
+		if tcm != nil {
+			go func() {
+				errc <- tcm.Serve() // cmux tls
+			}()
+		}
+		go func() {
+			errc <- cm.Serve() // cmux
+		}()
+	}
 
 	r.startTime = time.Now()
 	return errc, nil
@@ -407,7 +434,7 @@ func defaultServerKeepAliveConnectionProps() keepalive.ServerParameters {
 	}
 }
 
-func (r *runtime) newGRPCServerWithMetrics(tlsConfig *tls.Config) (*grpc.Server, error) {
+func (r *runtime) newGRPCServerWithMetrics() (*grpc.Server, error) {
 	r.logger.Debug("creating new gRPC server with default server metrics views")
 
 	var sacProp keepalive.ServerParameters
@@ -429,12 +456,6 @@ func (r *runtime) newGRPCServerWithMetrics(tlsConfig *tls.Config) (*grpc.Server,
 		opts = append(opts, middleware.GRPCAuth(r.authRuntime, r.grpcMethodDescriptors)...)
 	} else {
 		r.logger.Warn("auth runtime not enabled for the server")
-	}
-
-	if tlsConfig != nil {
-		// Create the TLS credentials
-		cred := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.Creds(cred))
 	}
 
 	return grpc.NewServer(opts...), nil

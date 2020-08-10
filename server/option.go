@@ -94,20 +94,6 @@ func MetricsPort(port uint) Option {
 	})
 }
 
-// Gateway enable/disable gateway
-func Gateway(enabled bool) Option {
-	return optionFunc(func(r *runtime) {
-		r.gwEnabled = enabled
-	})
-}
-
-// GatewayPort grpc gateway listener port
-func GatewayPort(port uint) Option {
-	return optionFunc(func(r *runtime) {
-		r.gwPort = port
-	})
-}
-
 // Trace enable/disable
 func Trace(enabled bool) Option {
 	return optionFunc(func(r *runtime) {
@@ -139,10 +125,11 @@ func TLSCred(certFile, keyFile, clientCA string) Option {
 }
 
 // GRPCAPI that needs to be registered with Runtime
-func GRPCAPI(handler GRPCAPIHandler) Option {
+func GRPCAPI(handler GRPCAPIHandler, gw bool) Option {
 	return optionFunc(func(r *runtime) {
 		r.grpcAPIHandler = handler
 		r.grpcEnabled = true
+		r.gwEnabled = gw
 	})
 }
 
