@@ -19,6 +19,8 @@ import (
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/soheilhy/cmux"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/cnative/pkg/auth"
 	"github.com/cnative/pkg/server/middleware"
@@ -44,7 +46,7 @@ type (
 
 	// GRPCAPIHandler handles api registration with the grpc server
 	GRPCAPIHandler interface {
-		Register(context.Context, *grpc.Server, *grpc_runtime.ServeMux) error
+		Register(context.Context, *grpc.Server, *grpc_runtime.ServeMux, *grpc.ClientConn) error
 		io.Closer
 	}
 	runtime struct {
@@ -58,6 +60,8 @@ type (
 		htServer      *http.Server
 		httpHandler   http.Handler
 		daemon        DaemonHandler
+
+		gwClientConn *grpc.ClientConn
 
 		grpcServerKAProps     *keepalive.ServerParameters
 		authRuntime           auth.Runtime
@@ -167,18 +171,19 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		if r.gwEnabled {
 			r.logger.Info("grpc gateway enabled")
 			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{EmitDefaults: true}))
-			var h http.Handler = gwmux
-			if r.authRuntime != nil {
-				h = middleware.HTTPRuntimeIDAuth(r.authRuntime, gwmux)
-			}
 			r.gwServer = &http.Server{
-				Handler: &ochttp.Handler{Handler: h},
+				Handler: &ochttp.Handler{Handler: gwmux},
 			}
+			conn, err := r.getGRPCClientConnectionForGateway(ctx)
+			if err != nil {
+				return nil, err
+			}
+			r.gwClientConn = conn
 		} else {
 			r.logger.Info("grpc gateway not enabled")
 		}
 
-		if err := r.grpcAPIHandler.Register(ctx, r.grpcServer, gwmux); err != nil {
+		if err := r.grpcAPIHandler.Register(ctx, r.grpcServer, gwmux, r.gwClientConn); err != nil {
 			return nil, err
 		}
 
@@ -346,12 +351,6 @@ func (r *runtime) Stop(ctx context.Context) {
 		r.grpcAPIHandler.Close()
 	}
 
-	if r.grpcEnabled {
-		// gracefully shutdown the gRPC server
-		r.logger.Info("shutting grpc server")
-		r.grpcServer.GracefulStop()
-	}
-
 	if r.gwEnabled {
 		r.logger.Info("shutting gateway server")
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -359,6 +358,16 @@ func (r *runtime) Stop(ctx context.Context) {
 		if err := r.gwServer.Shutdown(ctx); err != nil {
 			r.logger.Errorf("error happened while shutting gateway server -%v", err)
 		}
+
+		if err := r.gwClientConn.Close(); err != nil {
+			r.logger.Errorf("error happened while closing gateway grpc client -%v", err)
+		}
+	}
+
+	if r.grpcEnabled {
+		// gracefully shutdown the gRPC server
+		r.logger.Info("shutting grpc server")
+		r.grpcServer.GracefulStop()
 	}
 
 	if r.htEnabled {
@@ -555,4 +564,22 @@ func (r *runtime) registerMetricsViews() {
 	if err := view.Register(r.statsViews...); err != nil {
 		r.logger.Fatalf("Failed to register ocgrpc server views: %v", err)
 	}
+}
+
+func (r *runtime) getGRPCClientConnectionForGateway(ctx context.Context) (*grpc.ClientConn, error) {
+	grpc.SendHeader(ctx, metadata.Pairs("content-type", "application/grpc"))
+	opts := []grpc.DialOption{}
+
+	if r.isSecureConnection() {
+		tc, err := newTLSConfig()
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tc)))
+	} else {
+		opts = append(opts, grpc.WithInsecure())
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", r.gPort)
+	return grpc.Dial(addr, opts...)
 }
