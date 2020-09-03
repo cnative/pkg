@@ -124,6 +124,14 @@ func TLSCred(certFile, keyFile, clientCA string) Option {
 	})
 }
 
+// GatewayClientTLSCred Key and Cert file to be used by gateway client to connect to the gw server
+func GatewayClientTLSCred(certFile, keyFile string) Option {
+	return optionFunc(func(r *runtime) {
+		r.gwClientKeyFile = keyFile
+		r.gwClientCertFile = certFile
+	})
+}
+
 // GRPCAPI that needs to be registered with Runtime
 func GRPCAPI(handler GRPCAPIHandler, gw bool) Option {
 	return optionFunc(func(r *runtime) {

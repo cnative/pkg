@@ -72,17 +72,3 @@ func newClientCert() (cert tls.Certificate, err error) {
 
 	return clientCert, nil
 }
-
-func newTLSConfig() (*tls.Config, error) {
-
-	certificate, err := newClientCert()
-	if err != nil {
-		return nil, err
-	}
-	tc := &tls.Config{
-		Certificates:       []tls.Certificate{certificate},
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"h1"},
-	}
-	return tc, nil
-}
