@@ -131,7 +131,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	}
 
 	r.logger.Infow("TLS info", "key-file", r.keyFile, "cert-file", r.certFile, "client-ca", r.clientCA,
-		"gw-client-key-file", r.gwClientKeyFile, "gw-client-cert-file", r.gwClientCertFile)
+		"gateway-client-key-file", r.gwClientKeyFile, "gateway-client-cert-file", r.gwClientCertFile)
 
 	if !r.isSecureConnection() {
 		r.logger.Warn("no TLS key specified. starting server insecurely....")
