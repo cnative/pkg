@@ -74,9 +74,12 @@ type (
 		mPort  uint // metrics server port
 		dPort  uint // debug server port
 
-		certFile string
-		keyFile  string
-		clientCA string
+		certFile string // TLS certificate used by server listener
+		keyFile  string // TLS private key used by server listener
+		clientCA string // mTLS. if specified connections are accepted from clients that present certs signed by this CA
+
+		gwClientCertFile string // TLS certificate for gw client to connect to grpc server
+		gwClientKeyFile  string // TLS private key for gw client to connect to grpc server
 
 		grpcEnabled      bool // enable grpc server
 		htEnabled        bool // enable http server
@@ -353,14 +356,13 @@ func (r *runtime) Stop(ctx context.Context) {
 
 	if r.gwEnabled {
 		r.logger.Info("shutting gateway server")
+		if err := r.gwClientConn.Close(); err != nil {
+			r.logger.Errorf("error happened while closing gateway grpc client -%v", err)
+		}
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if err := r.gwServer.Shutdown(ctx); err != nil {
 			r.logger.Errorf("error happened while shutting gateway server -%v", err)
-		}
-
-		if err := r.gwClientConn.Close(); err != nil {
-			r.logger.Errorf("error happened while closing gateway grpc client -%v", err)
 		}
 	}
 
@@ -571,11 +573,30 @@ func (r *runtime) getGRPCClientConnectionForGateway(ctx context.Context) (*grpc.
 	opts := []grpc.DialOption{}
 
 	if r.isSecureConnection() {
-		tc, err := newTLSConfig()
-		if err != nil {
-			return nil, err
+
+		var (
+			cert tls.Certificate
+			err  error
+		)
+		if r.gwClientCertFile != "" && r.gwClientKeyFile != "" {
+			if cert, err = tls.LoadX509KeyPair(r.gwClientCertFile, r.gwClientKeyFile); err != nil {
+				return nil, err
+			}
+
+		} else if r.gwClientCertFile == "" && r.gwClientKeyFile == "" {
+			if cert, err = newClientCert(); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, errors.New("gateway client connection: both cert and private key file must be specified")
 		}
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tc)))
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h1"},
+			Certificates:       []tls.Certificate{cert},
+		}
+
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	} else {
 		opts = append(opts, grpc.WithInsecure())
 	}

@@ -113,7 +113,7 @@ func (l *Logger) initWrappedLogger() {
 		// Tee off logs to rollbar
 		zcores = append(zcores, newRollbarCore(l.rollbarToken, l.getEvironment(), l.getVersion(), l.rollbarMinLevel))
 	}
-	wl := zap.New(zapcore.NewTee(zcores...), zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zap.WarnLevel))
+	wl := zap.New(zapcore.NewTee(zcores...), zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zap.ErrorLevel))
 	l.wrappedLogger = wl.Named(l.name).Sugar()
 }
 
