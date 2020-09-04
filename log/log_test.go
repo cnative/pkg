@@ -32,14 +32,14 @@ func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		matcher func(l *Logger) bool
+		matcher func(l *logger) bool
 	}{
 		{
-			"case-1", args{[]Option{WithFormat(JSON)}}, func(l *Logger) bool {
+			"case-1", args{[]Option{WithFormat(JSON)}}, func(l *logger) bool {
 				return l.format == JSON
 			}},
 		{
-			"case-2", args{[]Option{WithTags(map[string]string{"environment": "dev", "version": "v1.2"})}}, func(l *Logger) bool {
+			"case-2", args{[]Option{WithTags(map[string]string{"environment": "dev", "version": "v1.2"})}}, func(l *logger) bool {
 				return l.getEvironment() == "dev" && l.getVersion() == "v1.2"
 			}},
 	}
@@ -61,10 +61,10 @@ func TestLogger_NamedLogger(t *testing.T) {
 	tests := []struct {
 		name    string
 		lName   string
-		matcher func(l *Logger) bool
+		matcher func(l *logger) bool
 	}{
 		{
-			"nammed-sub-logger", "sub-logger", func(l *Logger) bool {
+			"nammed-sub-logger", "sub-logger", func(l *logger) bool {
 				return l.name == "sub-logger"
 			},
 		},
@@ -76,7 +76,7 @@ func TestLogger_NamedLogger(t *testing.T) {
 				t.Errorf("New() error = %v, wantErr nil", err)
 				return
 			}
-			if got := l.NamedLogger(tt.lName); !tt.matcher(got) {
+			if got := l.NamedLogger(tt.lName).(*logger); !tt.matcher(got) {
 				t.Errorf("Logger.NamedLogger() = %q, want %q", got.name, tt.lName)
 			}
 		})

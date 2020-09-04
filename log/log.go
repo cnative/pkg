@@ -48,12 +48,39 @@ type (
 
 	// An Option configures a Logger.
 	Option interface {
-		apply(*Logger)
+		apply(*logger)
 	}
-	optionFunc func(*Logger)
+	optionFunc func(*logger)
 
 	// Logger for the projec
-	Logger struct {
+	Logger interface {
+		NamedLogger(name string) Logger
+
+		Info(msg string)
+		Warn(msg string)
+		Debug(msg string)
+		Error(msg string)
+		Fatal(msg string)
+		Panic(msg string)
+
+		Infof(template string, args ...interface{})
+		Warnf(template string, args ...interface{})
+		Debugf(template string, args ...interface{})
+		Errorf(template string, args ...interface{})
+		Fatalf(template string, args ...interface{})
+		Panicf(template string, args ...interface{})
+
+		Infow(msg string, keysAndValues ...interface{})
+		Warnw(msg string, keysAndValues ...interface{})
+		Debugw(msg string, keysAndValues ...interface{})
+		Errorw(msg string, keysAndValues ...interface{})
+		Fatalw(msg string, keysAndValues ...interface{})
+		Panicw(msg string, keysAndValues ...interface{})
+
+		Flush()
+	}
+
+	logger struct {
 		wrappedLogger *zap.SugaredLogger
 		level         Level
 		name          string
@@ -66,19 +93,19 @@ type (
 	}
 )
 
-func (f optionFunc) apply(r *Logger) {
+func (f optionFunc) apply(r *logger) {
 	f(r)
 }
 
 // NewNop returns a no-op Logger.
-func NewNop() (*Logger, error) {
-	return &Logger{wrappedLogger: zap.NewNop().Sugar()}, nil
+func NewNop() (*logger, error) {
+	return &logger{wrappedLogger: zap.NewNop().Sugar()}, nil
 }
 
 // New returns a new Logger
-func New(options ...Option) (*Logger, error) {
+func New(options ...Option) (*logger, error) {
 
-	logger := &Logger{
+	logger := &logger{
 		format:          AUTO,
 		level:           InfoLevel,
 		out:             os.Stdout,
@@ -96,7 +123,7 @@ func New(options ...Option) (*Logger, error) {
 	return logger, nil
 }
 
-func (l *Logger) initWrappedLogger() {
+func (l *logger) initWrappedLogger() {
 	atom := zap.NewAtomicLevel()
 	atom.SetLevel(zapcore.Level(l.level))
 	logOut := zapcore.Lock(os.Stdout) // could be a file or a remote sync
@@ -117,7 +144,7 @@ func (l *Logger) initWrappedLogger() {
 	l.wrappedLogger = wl.Named(l.name).Sugar()
 }
 
-func (l *Logger) getEncoder() (enc zapcore.Encoder) {
+func (l *logger) getEncoder() (enc zapcore.Encoder) {
 
 	encoderCfg := zap.NewProductionEncoderConfig()
 	switch l.format {
@@ -138,7 +165,7 @@ func (l *Logger) getEncoder() (enc zapcore.Encoder) {
 	return
 }
 
-func (l *Logger) isTerminal() bool {
+func (l *logger) isTerminal() bool {
 	switch v := l.out.(type) {
 	case *os.File:
 		return terminal.IsTerminal(int(v.Fd()))
@@ -148,109 +175,109 @@ func (l *Logger) isTerminal() bool {
 }
 
 // NamedLogger returns a named sub logger
-func (l *Logger) NamedLogger(name string) *Logger {
-	return &Logger{name: name, wrappedLogger: l.wrappedLogger.Named(name)}
+func (l *logger) NamedLogger(name string) Logger {
+	return &logger{name: name, wrappedLogger: l.wrappedLogger.Named(name)}
 }
 
 //Info - wrapper to underlying logger
-func (l *Logger) Info(msg string) {
+func (l *logger) Info(msg string) {
 	l.wrappedLogger.Info(msg)
 }
 
 //Warn - wrapper to underlying logger
-func (l *Logger) Warn(msg string) {
+func (l *logger) Warn(msg string) {
 	l.wrappedLogger.Warn(msg)
 }
 
 //Debug - wrapper to underlying logger
-func (l *Logger) Debug(msg string) {
+func (l *logger) Debug(msg string) {
 	l.wrappedLogger.Debug(msg)
 }
 
 //Error - wrapper to underlying logger
-func (l *Logger) Error(msg string) {
+func (l *logger) Error(msg string) {
 	l.wrappedLogger.Error(msg)
 }
 
 //Fatal - wrapper to underlying logger
-func (l *Logger) Fatal(msg string) {
+func (l *logger) Fatal(msg string) {
 	l.wrappedLogger.Fatal(msg)
 }
 
 // Panic - log info message with template
-func (l *Logger) Panic(msg string) {
+func (l *logger) Panic(msg string) {
 	l.wrappedLogger.Panicf(msg)
 }
 
 // Infof - log info message with template
-func (l *Logger) Infof(template string, args ...interface{}) {
+func (l *logger) Infof(template string, args ...interface{}) {
 	l.wrappedLogger.Infof(template, args...)
 }
 
 // Warnf - log info message with template
-func (l *Logger) Warnf(template string, args ...interface{}) {
+func (l *logger) Warnf(template string, args ...interface{}) {
 	l.wrappedLogger.Warnf(template, args...)
 }
 
 // Debugf - log info message with template
-func (l *Logger) Debugf(template string, args ...interface{}) {
+func (l *logger) Debugf(template string, args ...interface{}) {
 	l.wrappedLogger.Debugf(template, args...)
 }
 
 // Errorf - log info message with template
-func (l *Logger) Errorf(template string, args ...interface{}) {
+func (l *logger) Errorf(template string, args ...interface{}) {
 	l.wrappedLogger.Errorf(template, args...)
 }
 
 // Fatalf - log info message with template
-func (l *Logger) Fatalf(template string, args ...interface{}) {
+func (l *logger) Fatalf(template string, args ...interface{}) {
 	l.wrappedLogger.Fatalf(template, args...)
 }
 
 // Panicf - log info message with template
-func (l *Logger) Panicf(template string, args ...interface{}) {
+func (l *logger) Panicf(template string, args ...interface{}) {
 	l.wrappedLogger.Panicf(template, args...)
 }
 
 // Infow logs a message with some additional context
-func (l *Logger) Infow(msg string, keysAndValues ...interface{}) {
+func (l *logger) Infow(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Infow(msg, keysAndValues...)
 }
 
 // Warnw logs a message with some additional context
-func (l *Logger) Warnw(msg string, keysAndValues ...interface{}) {
+func (l *logger) Warnw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Warnw(msg, keysAndValues...)
 }
 
 // Debugw logs a message with some additional context
-func (l *Logger) Debugw(msg string, keysAndValues ...interface{}) {
+func (l *logger) Debugw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Debugw(msg, keysAndValues...)
 }
 
 // Errorw logs a message with some additional context
-func (l *Logger) Errorw(msg string, keysAndValues ...interface{}) {
+func (l *logger) Errorw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Errorw(msg, keysAndValues...)
 }
 
 // Fatalw logs a message with some additional context
-func (l *Logger) Fatalw(msg string, keysAndValues ...interface{}) {
+func (l *logger) Fatalw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Fatalw(msg, keysAndValues...)
 }
 
 // Panicw logs a message with some additional context
-func (l *Logger) Panicw(msg string, keysAndValues ...interface{}) {
+func (l *logger) Panicw(msg string, keysAndValues ...interface{}) {
 	l.wrappedLogger.Panicw(msg, keysAndValues...)
 }
 
 // Flush any buffered log entries.
-func (l *Logger) Flush() {
+func (l *logger) Flush() {
 	l.wrappedLogger.Sync()
 }
 
-func (l *Logger) getVersion() string {
+func (l *logger) getVersion() string {
 	return l.tags["version"]
 }
 
-func (l *Logger) getEvironment() string {
+func (l *logger) getEvironment() string {
 	return l.tags["environment"]
 }
