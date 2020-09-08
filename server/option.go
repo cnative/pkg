@@ -31,7 +31,7 @@ func Probes(probes map[string]health.Probe) Option {
 }
 
 // Logger for runtime
-func Logger(l *log.Logger) Option {
+func Logger(l log.Logger) Option {
 	return optionFunc(func(r *runtime) {
 		r.logger = l.NamedLogger("rt")
 	})

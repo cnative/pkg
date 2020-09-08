@@ -72,7 +72,7 @@ type Runtime interface {
 }
 
 type runtime struct {
-	logger *log.Logger
+	logger log.Logger
 
 	appName     string // app name passed as part of the authz request
 	serviceName string // service name used as part of the authz request

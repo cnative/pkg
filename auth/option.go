@@ -27,7 +27,7 @@ func ServiceName(serviceName string) Option {
 }
 
 // Logger for runtime
-func Logger(l *log.Logger) Option {
+func Logger(l log.Logger) Option {
 	return optionFunc(func(r *runtime) {
 		r.logger = l.NamedLogger("auth")
 	})

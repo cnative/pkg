@@ -44,7 +44,7 @@ func FailureSleepInterval(duration time.Duration) Option {
 }
 
 // Logger configures logger for health service
-func Logger(l *log.Logger) Option {
+func Logger(l log.Logger) Option {
 	return optionFunc(func(hc *healthChecker) {
 		hc.logger = l.NamedLogger("health")
 	})

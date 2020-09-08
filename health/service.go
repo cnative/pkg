@@ -31,7 +31,7 @@ type (
 
 	healthChecker struct {
 		server               *http.Server
-		logger               *log.Logger
+		logger               log.Logger
 		probes               map[string]Probe
 		quit                 chan bool
 		bindAddress          string
