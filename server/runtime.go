@@ -50,7 +50,7 @@ type (
 		io.Closer
 	}
 	runtime struct {
-		logger        *log.Logger
+		logger        log.Logger
 		probes        map[string]health.Probe
 		grpcServer    *grpc.Server
 		gwServer      *http.Server
