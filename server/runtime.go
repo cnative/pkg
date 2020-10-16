@@ -28,7 +28,7 @@ import (
 	"contrib.go.opencensus.io/exporter/ocagent"
 
 	"contrib.go.opencensus.io/exporter/prometheus"
-	grpc_runtime "github.com/grpc-ecosystem/grpc-gateway/runtime"
+	grpc_runtime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/plugin/ochttp"
@@ -175,7 +175,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		var gwmux *grpc_runtime.ServeMux
 		if r.gwEnabled {
 			r.logger.Info("grpc gateway enabled")
-			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{EmitDefaults: true}))
+			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{}))
 			r.gwServer = &http.Server{
 				Handler: &ochttp.Handler{Handler: gwmux},
 			}
@@ -272,9 +272,9 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 			}
 			tcm = cmux.New(tlsl)
 			grpcL = tcm.MatchWithWriters(cmux.HTTP2MatchHeaderFieldPrefixSendSettings("content-type", "application/grpc"))
-			gwL = tcm.Match(cmux.HTTP1Fast())
+			gwL = tcm.Match(cmux.HTTP1Fast("PATCH")) // include PATCH as well. https://github.com/soheilhy/cmux/blob/master/matchers.go#L46
 		} else {
-			gwL = cm.Match(cmux.HTTP1Fast())
+			gwL = cm.Match(cmux.HTTP1Fast("PATCH"))
 			grpcL = cm.Match(cmux.Any())
 		}
 
