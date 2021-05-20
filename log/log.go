@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 // Level is logger level
@@ -55,13 +55,12 @@ type (
 	// Logger for the projec
 	Logger interface {
 		NamedLogger(name string) Logger
-
-		Info(msg string)
-		Warn(msg string)
-		Debug(msg string)
-		Error(msg string)
-		Fatal(msg string)
-		Panic(msg string)
+		Info(args ...interface{})
+		Warn(args ...interface{})
+		Debug(args ...interface{})
+		Error(args ...interface{})
+		Fatal(args ...interface{})
+		Panic(args ...interface{})
 
 		Infof(template string, args ...interface{})
 		Warnf(template string, args ...interface{})
@@ -98,12 +97,12 @@ func (f optionFunc) apply(r *logger) {
 }
 
 // NewNop returns a no-op Logger.
-func NewNop() (*logger, error) {
-	return &logger{wrappedLogger: zap.NewNop().Sugar()}, nil
+func NewNop() Logger {
+	return &logger{wrappedLogger: zap.NewNop().Sugar()}
 }
 
 // New returns a new Logger
-func New(options ...Option) (*logger, error) {
+func New(options ...Option) Logger {
 
 	logger := &logger{
 		format:          AUTO,
@@ -120,7 +119,7 @@ func New(options ...Option) (*logger, error) {
 	}
 	logger.initWrappedLogger()
 
-	return logger, nil
+	return logger
 }
 
 func (l *logger) initWrappedLogger() {
@@ -168,7 +167,7 @@ func (l *logger) getEncoder() (enc zapcore.Encoder) {
 func (l *logger) isTerminal() bool {
 	switch v := l.out.(type) {
 	case *os.File:
-		return terminal.IsTerminal(int(v.Fd()))
+		return term.IsTerminal(int(v.Fd()))
 	default:
 		return false
 	}
@@ -180,33 +179,34 @@ func (l *logger) NamedLogger(name string) Logger {
 }
 
 //Info - wrapper to underlying logger
-func (l *logger) Info(msg string) {
-	l.wrappedLogger.Info(msg)
+func (l *logger) Info(args ...interface{}) {
+	l.wrappedLogger.Info(args...)
 }
 
 //Warn - wrapper to underlying logger
-func (l *logger) Warn(msg string) {
-	l.wrappedLogger.Warn(msg)
+func (l *logger) Warn(args ...interface{}) {
+	l.wrappedLogger.Warn(args...)
 }
 
 //Debug - wrapper to underlying logger
-func (l *logger) Debug(msg string) {
-	l.wrappedLogger.Debug(msg)
+func (l *logger) Debug(args ...interface{}) {
+	l.wrappedLogger.Debug(args...)
 }
 
 //Error - wrapper to underlying logger
-func (l *logger) Error(msg string) {
-	l.wrappedLogger.Error(msg)
+func (l *logger) Error(args ...interface{}) {
+	l.wrappedLogger.Error(args...)
 }
 
 //Fatal - wrapper to underlying logger
-func (l *logger) Fatal(msg string) {
-	l.wrappedLogger.Fatal(msg)
+func (l *logger) Fatal(args ...interface{}) {
+	l.wrappedLogger.Fatal(args...)
 }
 
 // Panic - log info message with template
-func (l *logger) Panic(msg string) {
-	l.wrappedLogger.Panicf(msg)
+func (l *logger) Panic(args ...interface{}) {
+	format, args := args[0], args[1:]
+	l.wrappedLogger.Panicf(format.(string), args...)
 }
 
 // Infof - log info message with template

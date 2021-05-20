@@ -111,11 +111,7 @@ func NewRuntime(ctx context.Context, options ...Option) (Runtime, error) {
 		opt.apply(r)
 	}
 	if r.logger == nil {
-		logger, err := log.NewNop()
-		if err != nil {
-			return nil, err
-		}
-		r.logger = logger
+		r.logger = log.NewNop()
 	}
 
 	verifier, err := newOIDCVerifier(ctx, r.issuer, r.aud)
@@ -199,8 +195,7 @@ func (r *runtime) Authorize(ctx context.Context, claims Claims, resource string,
 
 	ar, err = r.authorizer(ctx, authzReq)
 
-	// TODO copy certain information into context and cache the authz result with a TTL
-	return ctx, ar, err
+	return newAuthorizedContext(ctx, roles), ar, err
 }
 
 func (r *runtime) Verify(ctx context.Context, token string) (context.Context, Claims, error) {
@@ -223,7 +218,7 @@ func (r *runtime) Verify(ctx context.Context, token string) (context.Context, Cl
 		cl.AdditionalClaims = additionalClaims
 	}
 
-	return newContext(ctx, r.idResolver(cl)), cl, nil
+	return newAuthenticatedContext(ctx, r.idResolver(cl), cl), cl, nil
 }
 
 func newOIDCVerifier(ctx context.Context, issuer, audience string) (*oidc.IDTokenVerifier, error) {

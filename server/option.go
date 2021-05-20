@@ -124,20 +124,18 @@ func TLSCred(certFile, keyFile, clientCA string) Option {
 	})
 }
 
-// GatewayClientTLSCred Key and Cert file to be used by gateway client to connect to the gw server
-func GatewayClientTLSCred(certFile, keyFile string) Option {
+// GRPCAPIHandlers sets up grpc API handlers needs to be registered with Runtime
+func GRPCAPIHandlers(handler GRPCAPIHandler, handlers ...GRPCAPIHandler) Option {
 	return optionFunc(func(r *runtime) {
-		r.gwClientKeyFile = keyFile
-		r.gwClientCertFile = certFile
+		r.grpcAPIHandlers = append([]GRPCAPIHandler{handler}, handlers...)
+		r.grpcEnabled = true
 	})
 }
 
-// GRPCAPI that needs to be registered with Runtime
-func GRPCAPI(handler GRPCAPIHandler, gw bool) Option {
+//GRPCGateway option to enable HTTP REST API Gateway for the gRPC apis.
+func GRPCGateway() Option {
 	return optionFunc(func(r *runtime) {
-		r.grpcAPIHandler = handler
-		r.grpcEnabled = true
-		r.gwEnabled = gw
+		r.gwEnabled = true
 	})
 }
 

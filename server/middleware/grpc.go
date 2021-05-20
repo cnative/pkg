@@ -3,7 +3,6 @@ package middleware
 import (
 	"strings"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
@@ -11,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/cnative/pkg/api"
 	"github.com/cnative/pkg/auth"
@@ -133,10 +133,7 @@ func auth0(ctx context.Context, authRuntime auth.Runtime, req interface{}, resou
 func resourceActionResolver(methodName string, methodDescriptors map[string]*desc.MethodDescriptor) (resource string, action string, err error) {
 
 	if dsc, ok := methodDescriptors[methodName]; ok && proto.HasExtension(dsc.GetMethodOptions(), api.E_Authz) {
-		ext, err := proto.GetExtension(dsc.GetMethodOptions(), api.E_Authz)
-		if err != nil {
-			return "", "", err
-		}
+		ext := proto.GetExtension(dsc.GetMethodOptions(), api.E_Authz)
 		az, ok := ext.(*api.Authz)
 		if !ok {
 			err = errors.Errorf("failed to type casting. expect '*api.Authz' got %T\n", az)

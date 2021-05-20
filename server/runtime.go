@@ -14,29 +14,28 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cnative/pkg/health"
-	"github.com/cnative/pkg/log"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/grpcreflect"
-	"github.com/soheilhy/cmux"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-
-	"github.com/cnative/pkg/auth"
-	"github.com/cnative/pkg/server/middleware"
-
 	"contrib.go.opencensus.io/exporter/ocagent"
-
 	"contrib.go.opencensus.io/exporter/prometheus"
 	grpc_runtime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pkg/errors"
+	"github.com/soheilhy/cmux"
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/plugin/ochttp"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/trace"
 	"go.opencensus.io/zpages"
+
+	"github.com/cnative/pkg/auth"
+	"github.com/cnative/pkg/health"
+	"github.com/cnative/pkg/log"
+	"github.com/cnative/pkg/server/middleware"
+
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
 
 // default process metrics collection frequency
@@ -49,6 +48,7 @@ type (
 		Register(context.Context, *grpc.Server, *grpc_runtime.ServeMux, *grpc.ClientConn) error
 		io.Closer
 	}
+
 	runtime struct {
 		logger        log.Logger
 		probes        map[string]health.Probe
@@ -65,7 +65,7 @@ type (
 
 		grpcServerKAProps     *keepalive.ServerParameters
 		authRuntime           auth.Runtime
-		grpcAPIHandler        GRPCAPIHandler
+		grpcAPIHandlers       []GRPCAPIHandler
 		grpcMethodDescriptors map[string]*desc.MethodDescriptor
 
 		gPort  uint // GRPC server port
@@ -77,9 +77,6 @@ type (
 		certFile string // TLS certificate used by server listener
 		keyFile  string // TLS private key used by server listener
 		clientCA string // mTLS. if specified connections are accepted from clients that present certs signed by this CA
-
-		gwClientCertFile string // TLS certificate for gw client to connect to grpc server
-		gwClientKeyFile  string // TLS private key for gw client to connect to grpc server
 
 		grpcEnabled      bool // enable grpc server
 		htEnabled        bool // enable http server
@@ -119,6 +116,15 @@ func (r *runtime) isSecureConnection() bool {
 	return r.keyFile != "" && r.certFile != ""
 }
 
+func (r *runtime) wrapListenerWithTLS(l net.Listener) (net.Listener, error) {
+	tc, err := r.getTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return tls.NewListener(l, tc), nil
+}
+
 // NewRuntime returns a new Runtime
 func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, error) {
 	// setup defaults
@@ -127,12 +133,10 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		opt.apply(r)
 	}
 	if r.logger == nil {
-		r.logger, _ = log.NewNop()
+		r.logger = log.NewNop()
 	}
 
-	r.logger.Infow("TLS info", "key-file", r.keyFile, "cert-file", r.certFile, "client-ca", r.clientCA,
-		"gateway-client-key-file", r.gwClientKeyFile, "gateway-client-cert-file", r.gwClientCertFile)
-
+	r.logger.Infow("TLS info", "key-file", r.keyFile, "cert-file", r.certFile, "client-ca", r.clientCA)
 	if !r.isSecureConnection() {
 		r.logger.Warn("no TLS key specified. starting server insecurely....")
 	}
@@ -188,8 +192,14 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 			r.logger.Info("grpc gateway not enabled")
 		}
 
-		if err := r.grpcAPIHandler.Register(ctx, r.grpcServer, gwmux, r.gwClientConn); err != nil {
-			return nil, err
+		if len(r.grpcAPIHandlers) == 0 {
+			return nil, errors.Errorf("no grpc handlers registered. expect atleast one")
+		}
+
+		for _, h := range r.grpcAPIHandlers {
+			if err := h.Register(ctx, r.grpcServer, gwmux, r.gwClientConn); err != nil {
+				return nil, err
+			}
 		}
 
 		sds, _ := grpcreflect.LoadServiceDescriptors(r.grpcServer)
@@ -210,15 +220,6 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	}
 
 	return r, nil
-}
-
-func (r *runtime) wrapListenerWithTLS(l net.Listener) (net.Listener, error) {
-	tc, err := r.getTLSConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	return tls.NewListener(l, tc), nil
 }
 
 // Start server runtime
@@ -261,7 +262,6 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 			r.logger.Errorf("failed to create grpc listener -%v ", err)
 			return nil, err
 		}
-
 		cm = cmux.New(lis)
 		var grpcL, gwL net.Listener
 		if r.isSecureConnection() {
@@ -283,7 +283,6 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 			err := r.grpcServer.Serve(grpcL)
 			errc <- errors.Wrap(err, "grpc server returned an error")
 		}()
-
 		if r.gwEnabled {
 			// start gRPC gateway
 			go func() {
@@ -352,8 +351,8 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 func (r *runtime) Stop(ctx context.Context) {
 
 	r.logger.Infof("shutting down..")
-	if r.grpcAPIHandler != nil {
-		r.grpcAPIHandler.Close()
+	for _, h := range r.grpcAPIHandlers {
+		h.Close()
 	}
 
 	if r.gwEnabled {
@@ -361,6 +360,7 @@ func (r *runtime) Stop(ctx context.Context) {
 		if err := r.gwClientConn.Close(); err != nil {
 			r.logger.Errorf("error happened while closing gateway grpc client -%v", err)
 		}
+
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if err := r.gwServer.Shutdown(ctx); err != nil {
@@ -575,30 +575,11 @@ func (r *runtime) getGRPCClientConnectionForGateway(ctx context.Context) (*grpc.
 	opts := []grpc.DialOption{}
 
 	if r.isSecureConnection() {
-
-		var (
-			cert tls.Certificate
-			err  error
-		)
-		if r.gwClientCertFile != "" && r.gwClientKeyFile != "" {
-			if cert, err = tls.LoadX509KeyPair(r.gwClientCertFile, r.gwClientKeyFile); err != nil {
-				return nil, err
-			}
-
-		} else if r.gwClientCertFile == "" && r.gwClientKeyFile == "" {
-			if cert, err = newClientCert(); err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, errors.New("gateway client connection: both cert and private key file must be specified")
+		tc, err := newTLSConfig()
+		if err != nil {
+			return nil, err
 		}
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: true,
-			NextProtos:         []string{"h1"},
-			Certificates:       []tls.Certificate{cert},
-		}
-
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tc)))
 	} else {
 		opts = append(opts, grpc.WithInsecure())
 	}
