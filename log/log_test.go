@@ -6,18 +6,13 @@ import (
 
 func TestNewNop(t *testing.T) {
 	tests := []struct {
-		name    string
-		wantErr bool
+		name string
 	}{
-		{"succes", false},
+		{"succes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewNop()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewNop() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
+			got := NewNop()
 			if got == nil {
 				t.Errorf("NewNop() = nil, want  non-nil")
 			}
@@ -45,12 +40,8 @@ func TestNew(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := New(tt.args.options...)
-			if err != nil {
-				t.Errorf("New() error = %v, wantErr nil", err)
-				return
-			}
-			if tt.matcher != nil && !tt.matcher(got) {
+			got := New(tt.args.options...)
+			if tt.matcher != nil && !tt.matcher(got.(*logger)) {
 				t.Error("New() = options mismatch")
 			}
 		})
@@ -71,11 +62,7 @@ func TestLogger_NamedLogger(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			l, err := New()
-			if err != nil {
-				t.Errorf("New() error = %v, wantErr nil", err)
-				return
-			}
+			l := New()
 			if got := l.NamedLogger(tt.lName).(*logger); !tt.matcher(got) {
 				t.Errorf("Logger.NamedLogger() = %q, want %q", got.name, tt.lName)
 			}

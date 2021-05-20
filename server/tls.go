@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func newClientCert() (cert tls.Certificate, err error) {
+func newSelfSignedClientCert() (cert tls.Certificate, err error) {
 
 	ca := &x509.Certificate{
 		SerialNumber: big.NewInt(2020),
@@ -71,4 +71,18 @@ func newClientCert() (cert tls.Certificate, err error) {
 	}
 
 	return clientCert, nil
+}
+
+func newTLSConfig() (*tls.Config, error) {
+
+	certificate, err := newSelfSignedClientCert()
+	if err != nil {
+		return nil, err
+	}
+	tc := &tls.Config{
+		Certificates:       []tls.Certificate{certificate},
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h1"},
+	}
+	return tc, nil
 }

@@ -62,7 +62,7 @@ func New(otions ...Option) Service {
 	}
 
 	if hc.logger == nil {
-		hc.logger, _ = log.NewNop()
+		hc.logger = log.NewNop()
 	}
 
 	return hc
