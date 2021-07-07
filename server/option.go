@@ -2,10 +2,9 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
-	"go.opencensus.io/stats/view"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/cnative/pkg/log"
@@ -87,40 +86,26 @@ func HealthPort(port uint) Option {
 	})
 }
 
-// MetricsPort of the main grpc server
-func MetricsPort(port uint) Option {
-	return optionFunc(func(r *runtime) {
-		r.mPort = port
-	})
-}
-
-// Trace enable/disable
-func Trace(enabled bool) Option {
-	return optionFunc(func(r *runtime) {
-		r.traceEnabled = enabled
-	})
-}
-
-// OCAgentEP Opencensus Agent End point
-func OCAgentEP(host string, port uint) Option {
-	return optionFunc(func(r *runtime) {
-		r.ocAgentEP = fmt.Sprintf("%s:%d", host, port)
-	})
-}
-
-// OCAgentNamespace used for isolation/categorization
-func OCAgentNamespace(ns string) Option {
-	return optionFunc(func(r *runtime) {
-		r.ocAgentNamespace = ns
-	})
-}
-
 // TLSCred Key and Cert Files
 func TLSCred(certFile, keyFile, clientCA string) Option {
 	return optionFunc(func(r *runtime) {
 		r.keyFile = keyFile
 		r.certFile = certFile
 		r.clientCA = clientCA
+	})
+}
+
+// OTLPCollectorEP OTLP Collector endpoint
+func OTLPCollectorEP(ep string) Option {
+	return optionFunc(func(r *runtime) {
+		r.otlpCollectorEP = ep
+	})
+}
+
+// OTLPCollectorEP OTLP Collector endpoint
+func OTLPCollectorTLSCred(cred credentials.TransportCredentials) Option {
+	return optionFunc(func(r *runtime) {
+		r.otlpCollectorTLSCred = cred
 	})
 }
 
@@ -144,20 +129,6 @@ func HTTPAPI(handler http.Handler) Option {
 	return optionFunc(func(r *runtime) {
 		r.httpHandler = handler
 		r.htEnabled = true
-	})
-}
-
-// CustomMetricsViews custom metrics
-func CustomMetricsViews(views ...*view.View) Option {
-	return optionFunc(func(r *runtime) {
-		r.statsViews = views
-	})
-}
-
-// ProcessMetrics ebable collection of process metrics
-func ProcessMetrics(enabled bool) Option {
-	return optionFunc(func(r *runtime) {
-		r.processMetricsEnabled = enabled
 	})
 }
 

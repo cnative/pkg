@@ -14,24 +14,21 @@ import (
 	"syscall"
 	"time"
 
-	"contrib.go.opencensus.io/exporter/ocagent"
-	"contrib.go.opencensus.io/exporter/prometheus"
+	"github.com/cnative/pkg/auth"
+	"github.com/cnative/pkg/health"
+	"github.com/cnative/pkg/log"
+	"github.com/cnative/pkg/server/middleware"
 	grpc_runtime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pkg/errors"
 	"github.com/soheilhy/cmux"
-	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/plugin/ochttp"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/trace"
-	"go.opencensus.io/zpages"
-
-	"github.com/cnative/pkg/auth"
-	"github.com/cnative/pkg/health"
-	"github.com/cnative/pkg/log"
-	"github.com/cnative/pkg/server/middleware"
-
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
+	"go.opentelemetry.io/otel/metric/global"
+	"go.opentelemetry.io/otel/sdk/metric/controller/basic"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -50,16 +47,15 @@ type (
 	}
 
 	runtime struct {
-		logger        log.Logger
-		probes        map[string]health.Probe
-		grpcServer    *grpc.Server
-		gwServer      *http.Server
-		metricsServer *http.Server
-		healthServer  health.Service
-		debugServer   *http.Server
-		htServer      *http.Server
-		httpHandler   http.Handler
-		daemon        DaemonHandler
+		logger       log.Logger
+		probes       map[string]health.Probe
+		grpcServer   *grpc.Server
+		gwServer     *http.Server
+		healthServer health.Service
+		debugServer  *http.Server
+		htServer     *http.Server
+		httpHandler  http.Handler
+		daemon       DaemonHandler
 
 		gwClientConn *grpc.ClientConn
 
@@ -71,28 +67,24 @@ type (
 		gPort  uint // GRPC server port
 		htPort uint // HTTP server port
 		hPort  uint // health server port
-		mPort  uint // metrics server port
 		dPort  uint // debug server port
 
 		certFile string // TLS certificate used by server listener
 		keyFile  string // TLS private key used by server listener
 		clientCA string // mTLS. if specified connections are accepted from clients that present certs signed by this CA
 
-		grpcEnabled      bool // enable grpc server
-		htEnabled        bool // enable http server
-		gwEnabled        bool // enable gateway server
-		debugEnabled     bool // if enabled serve pprof data via HTTP server
-		traceEnabled     bool
-		ocAgentEP        string
-		ocAgentNamespace string
-		ocExporter       *ocagent.Exporter // ocexporter used only for tracing. will eventually use the same for stats as well
+		grpcEnabled  bool // enable grpc server
+		htEnabled    bool // enable http server
+		gwEnabled    bool // enable gateway server
+		debugEnabled bool // if enabled serve pprof data via HTTP server
 
-		pcm                   ProcessMetricsCollector
-		processMetricsEnabled bool
-		tags                  map[string]string // info purpose labels
-		startTime             time.Time
-		statsViews            []*view.View
-		shutdownHook          func(context.Context) error // shutdown hook for runtime
+		otlpCollectorEP      string                           // OTLP collector endpoint to which the metrics and trace data is exported
+		otlpCollectorTLSCred credentials.TransportCredentials // OTLP collector TLS certificate used by client
+		otlpController       *basic.Controller                // OTLP controller
+
+		tags         map[string]string // info purpose labels
+		startTime    time.Time
+		shutdownHook func(context.Context) error // shutdown hook for runtime
 	}
 
 	//Runtime interface defines server operations
@@ -142,23 +134,6 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	}
 
 	r.healthServer = health.New(health.BindPort(r.hPort), health.Logger(r.logger))
-	metricsHandler := http.NewServeMux()
-	r.metricsServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", r.mPort),
-		Handler: metricsHandler,
-	}
-	r.registerPromMetricsExporter(metricsHandler)
-	r.registerMetricsViews()
-
-	if r.traceEnabled {
-		// we use opencensus exporter only for trace. eventually we will use this for metrics as well
-		r.logger.Infow("registering opencensus exporter", "agent-ep", r.ocAgentEP, "namespace", r.ocAgentNamespace)
-		if err := r.registerOpencensusExporter(); err != nil {
-			return nil, err
-		}
-	} else {
-		r.logger.Warnf("tracing not enabled")
-	}
 
 	if r.debugEnabled {
 		r.debugServer = &http.Server{
@@ -170,7 +145,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 	if r.grpcEnabled {
 		r.logger.Debug("creating grpc server")
 		r.grpcMethodDescriptors = map[string]*desc.MethodDescriptor{}
-		gsrv, err := r.newGRPCServerWithMetrics()
+		gsrv, err := r.newGRPCServer()
 		if err != nil {
 			return nil, err
 		}
@@ -180,9 +155,7 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		if r.gwEnabled {
 			r.logger.Info("grpc gateway enabled")
 			gwmux = grpc_runtime.NewServeMux(grpc_runtime.WithMarshalerOption(grpc_runtime.MIMEWildcard, &grpc_runtime.JSONPb{}))
-			r.gwServer = &http.Server{
-				Handler: &ochttp.Handler{Handler: gwmux},
-			}
+			r.gwServer = &http.Server{Handler: otelhttp.NewHandler(gwmux, "ggw")}
 			conn, err := r.getGRPCClientConnectionForGateway(ctx)
 			if err != nil {
 				return nil, err
@@ -215,11 +188,29 @@ func NewRuntime(ctx context.Context, name string, options ...Option) (Runtime, e
 		r.logger.Info("http server enabled")
 		r.htServer = &http.Server{
 			Addr:    fmt.Sprintf(":%d", r.htPort),
-			Handler: &ochttp.Handler{Handler: r.httpHandler},
+			Handler: otelhttp.NewHandler(r.httpHandler, "ht"),
 		}
 	}
 
 	return r, nil
+}
+
+func (r *runtime) startOTLPExporter(ctx context.Context) error {
+
+	tlsOpt := otlpgrpc.WithInsecure()
+	if r.otlpCollectorTLSCred != nil {
+		tlsOpt = otlpgrpc.WithTLSCredentials(r.otlpCollectorTLSCred)
+	}
+	driver := otlpgrpc.NewDriver(tlsOpt, otlpgrpc.WithEndpoint(r.otlpCollectorEP))
+
+	_, _, ctrl, err := otlp.InstallNewPipeline(ctx, driver)
+	if err != nil {
+		return err
+	}
+	global.SetMeterProvider(ctrl.MeterProvider())
+	r.otlpController = ctrl
+
+	return nil
 }
 
 // Start server runtime
@@ -234,17 +225,6 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		errc <- fmt.Errorf("%s", <-c)
 	}()
 
-	// Start process metrics collector
-	if r.processMetricsEnabled {
-		r.pcm = NewProcessMetricsCollector()
-		go func() {
-			r.logger.Info("starting process metrics collector")
-			_ = r.pcm.Start()
-		}()
-	} else {
-		r.logger.Warn("skipping process metrics collection")
-	}
-
 	// Start http listener that exposes server pprof runtime data
 	if r.debugEnabled {
 		go func() {
@@ -252,6 +232,13 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 			err := r.debugServer.ListenAndServe()
 			errc <- errors.Wrap(err, "debug server returned an error")
 		}()
+	}
+
+	if r.otlpCollectorEP != "" {
+		// start otlp exporter if  specified
+		if err := r.startOTLPExporter(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	var cm, tcm cmux.CMux
@@ -325,13 +312,6 @@ func (r *runtime) Start(ctx context.Context) (chan error, error) {
 		}()
 	}
 
-	// Start metrics server
-	go func() {
-		r.logger.Infow("starting metrics server", "port", r.mPort)
-		err := r.metricsServer.ListenAndServe()
-		errc <- errors.Wrap(err, "metrics service returned an error")
-	}()
-
 	if cm != nil {
 		if tcm != nil {
 			go func() {
@@ -398,25 +378,6 @@ func (r *runtime) Stop(ctx context.Context) {
 		}
 	}
 
-	r.logger.Info("shutting metrics server")
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := r.metricsServer.Shutdown(ctx); err != nil {
-		r.logger.Errorf("error happened while shutting metrics server -%v", err)
-	}
-
-	if r.processMetricsEnabled {
-		// stop collecting process metrics
-		r.pcm.Stop()
-	}
-
-	if r.traceEnabled {
-		r.logger.Info("stopping opencensus exporter")
-		if err := r.ocExporter.Stop(); err != nil {
-			r.logger.Errorf("error happened while stopping oc exporter", err)
-		}
-	}
-
 	if r.daemon != nil {
 		r.logger.Info("stopping daemon server")
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -434,6 +395,15 @@ func (r *runtime) Stop(ctx context.Context) {
 			r.logger.Errorf("error happened while calling shutdown hook", err)
 		}
 	}
+
+	if r.otlpController != nil {
+		r.logger.Info("shutting otlp controller")
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := r.otlpController.Stop(ctx); err != nil {
+			r.logger.Errorf("error happened while stopping otlp controller", err)
+		}
+	}
 }
 
 // grpc server connection keep alive properties
@@ -447,8 +417,8 @@ func defaultServerKeepAliveConnectionProps() keepalive.ServerParameters {
 	}
 }
 
-func (r *runtime) newGRPCServerWithMetrics() (*grpc.Server, error) {
-	r.logger.Debug("creating new gRPC server with default server metrics views")
+func (r *runtime) newGRPCServer() (*grpc.Server, error) {
+	r.logger.Debug("creating new gRPC server")
 
 	var sacProp keepalive.ServerParameters
 	if r.grpcServerKAProps != nil {
@@ -458,60 +428,24 @@ func (r *runtime) newGRPCServerWithMetrics() (*grpc.Server, error) {
 	}
 
 	opts := []grpc.ServerOption{
-		grpc.StatsHandler(&ocgrpc.ServerHandler{}),
 		grpc.KeepaliveParams(sacProp),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
 			PermitWithoutStream: true,            // Allow pings even when there are no active streams
 		}),
 	}
+
+	uis := []grpc.UnaryServerInterceptor{otelgrpc.UnaryServerInterceptor()}
+	sis := []grpc.StreamServerInterceptor{otelgrpc.StreamServerInterceptor()}
 	if r.authRuntime != nil {
-		opts = append(opts, middleware.GRPCAuth(r.authRuntime, r.grpcMethodDescriptors)...)
+		ui, si := middleware.GRPCAuthInterceptors(r.authRuntime, r.grpcMethodDescriptors)
+		uis, sis = append(uis, ui), append(sis, si)
 	} else {
 		r.logger.Warn("auth runtime not enabled for the server")
 	}
-
+	opts = append(opts, middleware.GRPCUnaryInterceptors(uis...)...)
+	opts = append(opts, middleware.GRPCStreamInterceptors(sis...)...)
 	return grpc.NewServer(opts...), nil
-}
-
-// register trace exporter
-func (r *runtime) registerOpencensusExporter() (err error) {
-
-	r.ocExporter, err = ocagent.NewExporter(
-		ocagent.WithInsecure(),
-		ocagent.WithReconnectionPeriod(5*time.Second),
-		ocagent.WithAddress(r.ocAgentEP),
-		ocagent.WithServiceName(r.ocAgentNamespace))
-
-	if err != nil {
-		r.logger.Fatalf("failed to create ocagent-exporter: %v", err)
-		return err
-	}
-
-	trace.RegisterExporter(r.ocExporter)
-	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample(),
-		MaxAttributesPerSpan:       trace.DefaultMaxAttributesPerSpan,
-		MaxAnnotationEventsPerSpan: trace.DefaultMaxAnnotationEventsPerSpan,
-		MaxMessageEventsPerSpan:    trace.DefaultMaxMessageEventsPerSpan,
-		MaxLinksPerSpan:            trace.DefaultMaxLinksPerSpan})
-
-	return nil
-}
-
-// registers prometheus metrics exporter
-func (r *runtime) registerPromMetricsExporter(mux *http.ServeMux) {
-
-	// create the Prometheus exporter.
-	pe, err := prometheus.NewExporter(prometheus.Options{})
-	if err != nil {
-		r.logger.Fatalf("Failed to create prometheus metrics exporter: %v", err)
-	}
-
-	view.RegisterExporter(pe)
-	r.logger.Debug("registering prometheus exporter with http server mux")
-
-	mux.Handle("/metrics", pe)
-	zpages.Handle(mux, "/")
 }
 
 // get TLS Config
@@ -545,29 +479,6 @@ func (r *runtime) getTLSConfig() (*tls.Config, error) {
 	}
 
 	return &tlsConfig, nil
-}
-
-func (r *runtime) registerMetricsViews() {
-
-	// process stats
-	if err := view.Register(DefaultProcessViews...); err != nil {
-		r.logger.Fatalf("failed to register default process views: %v", err)
-	}
-
-	// grpc server stats
-	if err := view.Register(ocgrpc.DefaultServerViews...); err != nil {
-		r.logger.Fatalf("failed to register ocgrpc server views: %v", err)
-	}
-
-	// http server stats
-	if err := view.Register(ochttp.DefaultServerViews...); err != nil {
-		r.logger.Fatalf("failed to register ocgrpc server views: %v", err)
-	}
-
-	// custom stats
-	if err := view.Register(r.statsViews...); err != nil {
-		r.logger.Fatalf("Failed to register ocgrpc server views: %v", err)
-	}
 }
 
 func (r *runtime) getGRPCClientConnectionForGateway(ctx context.Context) (*grpc.ClientConn, error) {

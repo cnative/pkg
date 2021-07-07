@@ -182,13 +182,18 @@ func streamAuth(authRuntime auth.Runtime, methodDescriptors map[string]*desc.Met
 	}
 }
 
-// GRPCAuth returns unary and stream interceptors
-func GRPCAuth(authRuntime auth.Runtime, methodDescriptors map[string]*desc.MethodDescriptor) []grpc.ServerOption {
+// GRPCUnaryInterceptors returns chained unary grpc interceptros
+func GRPCUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) []grpc.ServerOption {
+	return []grpc.ServerOption{WithUnaryInterceptors(interceptors...)}
+}
 
-	return []grpc.ServerOption{
-		WithUnaryInterceptors(unaryAuth(authRuntime, methodDescriptors)),
-		WithStreamInterceptors(streamAuth(authRuntime, methodDescriptors)),
-	}
+// GRPCStreamInterceptors returns chained stream grpc interceptros
+func GRPCStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) []grpc.ServerOption {
+	return []grpc.ServerOption{WithStreamInterceptors(interceptors...)}
+}
+
+func GRPCAuthInterceptors(authRuntime auth.Runtime, methodDescriptors map[string]*desc.MethodDescriptor) (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	return unaryAuth(authRuntime, methodDescriptors), streamAuth(authRuntime, methodDescriptors)
 }
 
 // getTokenFromGRPCContext grpc token resolver
